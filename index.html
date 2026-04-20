@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Todo Task Manager</title>
+  <meta name="description" content="Department-based task management system with role-based access control" />
+
+  <!-- Security Headers -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self';
+                   script-src 'self' 'unsafe-eval' 'unsafe-inline' https://unpkg.com https://www.gstatic.com https://cdnjs.cloudflare.com;
+                   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+                   font-src https://fonts.gstatic.com;
+                   connect-src https://firestore.googleapis.com https://*.firebaseio.com https://*.googleapis.com wss://*.firebaseio.com https://*.cloudfunctions.net;
+                   img-src 'self' data:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+
+  <link rel="stylesheet" href="index.css" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#6366f1" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Firebase SDK v8 (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- jsPDF for PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+
+    // ============================================================
+    // SECURITY UTILITIES (Deprecated - Using Firebase Auth)
+    // ============================================================
+
+    // ============================================================
+    // FIREBASE CONFIG
+    // ============================================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyDoIak-vREfMUPyHve1Nn0_s3_GKYR-ZDc",
+      authDomain: "meccollab-3befa.firebaseapp.com",
+      projectId: "meccollab-3befa",
+      storageBucket: "meccollab-3befa.firebasestorage.app",
+      messagingSenderId: "857090759788",
+      appId: "1:857090759788:web:cf123e1b1c7d48d86dcc49",
+      measurementId: "G-8NFQJ33WRE"
+    };
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+
+    // Initialize secondary app for Admin User Creation workaround
+    const secondaryApp = firebase.initializeApp(firebaseConfig, "Secondary");
+    const secondaryAuth = secondaryApp.auth();
+
+    // Enable persistence for offline support
+    db.enablePersistence({ synchronizeTabs: true }).catch(err => {
+      if (err.code === 'failed-precondition') console.warn('Persistence failed: multiple tabs open');
+      else if (err.code === 'unimplemented') console.warn('Persistence not supported by browser');
+    });
+
+    const { useState, useEffect, useMemo, useCallback } = React;
+
+    // Removed DEFAULT_PASSWORD_HASH as we use Firebase Auth directly
+    const DEFAULT_PASSWORD = 'Todo@123';
+
+    const roleLabel = (r) => ({ admin: 'Admin', incharge: 'Section In-charge', executive: 'Executive' }[r] || r);
+
+    // ============================================================
+    // HELPER: Initialize Admin User in Firestore (Run once in console)
+    // ============================================================
+    window.initializeAdminUser = async () => {
+      try {
+        const adminDoc = await db.collection('todo_users').doc('ADMIN').get();
+        if (adminDoc.exists) {
+          console.log('✓ ADMIN user already exists in Firestore:', adminDoc.data());
+          return;
+        }
+        
+        console.log('Creating ADMIN user document...');
+        await db.collection('todo_users').doc('ADMIN').set({
+          id: 'ADMIN',
+          name: 'Admin',
+          role: 'admin',
+          dob: '1990-01-01',
+          designation: 'Administrator',
+          departmentId: '',
+          seniority: 0,
+          requiresPasswordChange: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        console.log('✓ ADMIN user created successfully!');
+        console.log('You can now login with: Admin / DT@2025');
+      } catch (err) {
+        console.error('✗ Error initializing ADMIN:', err.message);
+      }
+    };
+    
+    // Log helper for user
+    console.log('%c📋 To create ADMIN user in Firestore, run this in console:', 'color: #6366f1; font-weight: bold;');
+    console.log('%cinitializeAdminUser()', 'color: #059669; font-family: monospace; font-weight: bold;');
+
+    // ============================================================
+    // SVG ICONS
+    // ============================================================
+    const Icons = {
+      Trash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>,
+      Edit: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>,
+      Check: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>,
+      User: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>,
+      LogOut: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>,
+      Download: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
+      Settings: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>,
+    };
+
+    // ============================================================
+    // PDF GENERATION
+    // ============================================================
+    function generatePDF(tasks, currentUser) {
+      if (!window.jspdf) { alert('PDF library not loaded. Check your internet connection.'); return; }
+      try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+
+        doc.setFontSize(16); doc.setFont('helvetica', 'bold');
+        doc.text('Task Status Report', 14, 18);
+        doc.setFontSize(9); doc.setFont('helvetica', 'normal');
+        doc.text(`Generated by: ${currentUser.name}  |  Date: ${today.toLocaleDateString('en-IN')}`, 14, 25);
+
+        const rows = tasks.filter(t => t.status !== 'deleted').map(t => {
+          const due = new Date(t.date + 'T00:00:00');
+          const diff = Math.ceil((due - today) / 86400000);
+          const daysStr = t.status === 'completed' ? 'Done' : (diff > 0 ? '+' + diff : String(diff));
+          let st = t.status;
+          if (t.status === 'pending') st = diff < 0 ? 'Overdue' : (diff === 0 ? 'Due Today' : 'Active');
+          else st = 'Completed';
+          return [t.name, t.desc.length > 60 ? t.desc.slice(0, 57) + '...' : t.desc, t.assignedByName, t.assignedToName, t.date, t.time || 'N/A', t.priority, st, daysStr];
+        });
+
+        doc.autoTable({
+          head: [['Task Name', 'Description', 'Assigned From', 'Assigned To', 'Date', 'Time', 'Priority', 'Status', 'Days +/-']],
+          body: rows, startY: 30, theme: 'grid',
+          styles: { fontSize: 7.5, cellPadding: 2 },
+          headStyles: { fillColor: [99, 102, 241], fontStyle: 'bold', fontSize: 8 },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: { 0: { cellWidth: 32 }, 1: { cellWidth: 52 }, 8: { halign: 'center', fontStyle: 'bold' } }
+        });
+
+        const pc = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= pc; i++) { doc.setPage(i); doc.setFontSize(7); doc.setTextColor(150); doc.text(`Page ${i}/${pc}`, doc.internal.pageSize.getWidth() - 25, doc.internal.pageSize.getHeight() - 8); }
+        doc.save(`Task_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+      } catch (e) { alert('Error generating PDF: ' + e.message); }
+    }
+
+    // ============================================================
+    // ADMIN PANEL COMPONENT
+    // ============================================================
+    function AdminPanel({ currentUser, users, departments, onClose }) {
+      const isAdmin = currentUser.role === 'admin';
+      const [adminTab, setAdminTab] = useState(isAdmin ? 'departments' : 'users');
+      const [msg, setMsg] = useState('');
+      const [msgType, setMsgType] = useState('info');
+
+      // Department form
+      const [newDeptName, setNewDeptName] = useState('');
+
+      // User form
+      const [nuName, setNuName] = useState('');
+      const [nuId, setNuId] = useState('');
+      const [nuDob, setNuDob] = useState('');
+      const [nuDept, setNuDept] = useState('');
+      const [nuRole, setNuRole] = useState('executive');
+      const [nuDesignation, setNuDesignation] = useState('Assistant Manager');
+      const designationsList = ['ED', 'CGM', 'Sr. General Manager', 'General Manager', 'Deputy General Manager', 'Assistant General Manager', 'Senior Manager', 'Manager', 'Deputy Manager', 'Assistant Manager'];
+
+      // Selected dept for user view
+      const [viewDeptId, setViewDeptId] = useState(isAdmin ? '' : currentUser.departmentId);
+
+      // Password management
+      const [pwUserId, setPwUserId] = useState('');
+      const [pwNewPw, setPwNewPw] = useState('');
+
+      // Data export
+      const [showExport, setShowExport] = useState(false);
+
+      const flash = (m, type = 'info') => { setMsg(m); setMsgType(type); setTimeout(() => setMsg(''), 3000); };
+
+      // ---- Department handlers ----
+      const addDepartment = async () => {
+        if (!newDeptName.trim()) return;
+        if (departments.some(d => d.name.toLowerCase() === newDeptName.trim().toLowerCase())) { flash('Department already exists', 'warning'); return; }
+        await db.collection('todo_departments').add({ name: newDeptName.trim(), inchargeId: null, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        setNewDeptName('');
+        flash('Department created!', 'success');
+      };
+
+      const deleteDepartment = async (deptId) => {
+        const deptUsers = users.filter(u => u.departmentId === deptId);
+        if (deptUsers.length > 0) { flash('Remove all users from this department first', 'warning'); return; }
+        await db.collection('todo_departments').doc(deptId).delete();
+        flash('Department deleted', 'success');
+      };
+
+      const assignIncharge = async (deptId, userId) => {
+        const dept = departments.find(d => d.id === deptId);
+        // Reset previous incharge to executive
+        if (dept.inchargeId) {
+          const prevUser = users.find(u => u.id === dept.inchargeId);
+          if (prevUser) await db.collection('todo_users').doc(prevUser.id).update({ role: 'executive' });
+        }
+        if (userId) {
+          await db.collection('todo_users').doc(userId).update({ role: 'incharge' });
+          await db.collection('todo_departments').doc(deptId).update({ inchargeId: userId });
+        } else {
+          await db.collection('todo_departments').doc(deptId).update({ inchargeId: null });
+        }
+        flash('In-charge updated!', 'success');
+      };
+
+      // ---- User handlers ----
+      const addUser = async () => {
+        if (!nuName.trim() || !nuId.trim() || !nuDob) { flash('Fill all user fields', 'warning'); return; }
+        const cleanId = nuId.trim().toUpperCase();
+        const targetDept = isAdmin ? nuDept : currentUser.departmentId;
+        if (!targetDept) { flash('Select a department', 'warning'); return; }
+        if (users.some(u => u.id === cleanId)) { flash('Personnel No. already exists', 'warning'); return; }
+
+        try {
+          const dummyEmail = `${cleanId}@todomec.internal`;
+          await secondaryAuth.createUserWithEmailAndPassword(dummyEmail, 'Todo@123');
+
+          const seniorityLevel = designationsList.indexOf(nuDesignation) + 1;
+          await db.collection('todo_users').doc(cleanId).set({
+            id: cleanId, name: nuName.trim(), role: isAdmin ? nuRole : 'executive',
+            departmentId: targetDept, seniority: seniorityLevel,
+            designation: nuDesignation,
+            dob: nuDob, requiresPasswordChange: true,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          setNuName(''); setNuId(''); setNuDob(''); setNuRole('executive'); setNuDesignation('Assistant Manager');
+          flash('User added with default password Todo@123', 'success');
+        } catch (error) {
+          flash('Error creating user: ' + error.message, 'warning');
+        }
+      };
+
+      const removeUser = async (userId) => {
+        const user = users.find(u => u.id === userId);
+        if (!user) return;
+        // If user is incharge, clear department's inchargeId
+        const dept = departments.find(d => d.inchargeId === userId);
+        if (dept) await db.collection('todo_departments').doc(dept.id).update({ inchargeId: null });
+        await db.collection('todo_users').doc(userId).delete();
+        flash('User removed', 'success');
+      };
+
+      const changeSeniority = async (userId, direction) => {
+        const user = users.find(u => u.id === userId);
+        if (!user) return;
+        const deptUsers = users.filter(u => u.departmentId === user.departmentId && u.role !== 'admin').sort((a, b) => a.seniority - b.seniority);
+        const idx = deptUsers.findIndex(u => u.id === userId);
+        const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= deptUsers.length) return;
+        const other = deptUsers[swapIdx];
+        const batch = db.batch();
+        batch.update(db.collection('todo_users').doc(userId), { seniority: other.seniority });
+        batch.update(db.collection('todo_users').doc(other.id), { seniority: user.seniority });
+        await batch.commit();
+      };
+
+      const changeUserPassword = async () => {
+        flash('Password resets by Admin are disabled. Use Firebase Console.', 'warning');
+      };
+
+      const resetToDefault = async (userId) => {
+        flash('Password resets by Admin are disabled. Use Firebase Console.', 'warning');
+      };
+
+      const exportData = () => {
+        const data = {
+          exportDate: new Date().toISOString(),
+          departments, tasks: [], // tasks passed separately if needed
+          users: users.map(u => ({ ...u, password: '[REDACTED]' }))
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url;
+        a.download = `todo_export_${new Date().toISOString().split('T')[0]}.json`;
+        a.click(); URL.revokeObjectURL(url);
+      };
+
+      const viewDeptUsers = useMemo(() => {
+        if (!viewDeptId) return [];
+        return users.filter(u => u.departmentId === viewDeptId && u.role !== 'admin').sort((a, b) => a.seniority - b.seniority);
+      }, [users, viewDeptId]);
+
+      return (
+        <div className="admin-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+          <div className="admin-panel">
+            <div className="admin-panel-header">
+              <h2><Icons.Settings /> {isAdmin ? 'Admin Panel' : 'Manage Department'}</h2>
+              <button className="admin-close-btn" onClick={onClose}>✕</button>
+            </div>
+
+            <div className="admin-tabs">
+              {isAdmin && <button className={`admin-tab-btn ${adminTab === 'departments' ? 'active' : ''}`} onClick={() => setAdminTab('departments')}>Departments</button>}
+              <button className={`admin-tab-btn ${adminTab === 'users' ? 'active' : ''}`} onClick={() => setAdminTab('users')}>Users</button>
+              {isAdmin && <button className={`admin-tab-btn ${adminTab === 'settings' ? 'active' : ''}`} onClick={() => setAdminTab('settings')}>Settings</button>}
+            </div>
+
+            <div className="admin-content">
+              {msg && <div className={`alert-${msgType === 'success' ? 'success' : msgType === 'warning' ? 'warning' : 'info'}`}>{msg}</div>}
+
+              {/* ===== DEPARTMENTS TAB ===== */}
+              {adminTab === 'departments' && isAdmin && (
+                <div>
+                  <div className="admin-section-title">Manage Departments</div>
+                  <div className="admin-form-row">
+                    <div className="form-group">
+                      <label>Department Name</label>
+                      <input type="text" value={newDeptName} onChange={e => setNewDeptName(e.target.value)} placeholder="e.g. Engineering" />
+                    </div>
+                    <button className="btn-primary" onClick={addDepartment} style={{ alignSelf: 'flex-end', padding: '0.7rem 1.2rem' }}>+ Add</button>
+                  </div>
+
+                  {departments.length === 0 ? (
+                    <div className="empty-state">No departments yet. Create one above.</div>
+                  ) : departments.map(dept => {
+                    const deptUsers = users.filter(u => u.departmentId === dept.id && u.role !== 'admin');
+                    const incharge = users.find(u => u.id === dept.inchargeId);
+                    return (
+                      <div key={dept.id} className="admin-card">
+                        <div className="admin-card-header">
+                          <div>
+                            <div className="admin-card-title">{dept.name}</div>
+                            <div className="admin-card-subtitle">
+                              In-charge: {incharge ? incharge.name : 'None'} · {deptUsers.length} user{deptUsers.length !== 1 ? 's' : ''}
+                            </div>
+                          </div>
+                          <div className="admin-card-actions">
+                            <button className="icon-btn danger" onClick={() => deleteDepartment(dept.id)} title="Delete Department"><Icons.Trash /></button>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginTop: '0.5rem' }}>
+                          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                            <label style={{ fontSize: '0.72rem' }}>Assign In-charge</label>
+                            <select value={dept.inchargeId || ''} onChange={e => assignIncharge(dept.id, e.target.value)} style={{ padding: '0.4rem 0.6rem', fontSize: '0.82rem' }}>
+                              <option value="">None</option>
+                              {deptUsers.sort((a, b) => a.seniority - b.seniority).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* ===== USERS TAB ===== */}
+              {adminTab === 'users' && (
+                <div>
+                  <div className="admin-section-title">Manage Users</div>
+
+                  {isAdmin && (
+                    <div className="form-group" style={{ marginBottom: '1rem' }}>
+                      <label>View Department</label>
+                      <select value={viewDeptId} onChange={e => setViewDeptId(e.target.value)}>
+                        <option value="">Select Department...</option>
+                        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Add User Form */}
+                  <div style={{ background: 'var(--border-light)', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1rem', border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--text)' }}>Add New User</div>
+                    <div className="admin-form-row" style={{ marginBottom: '0.5rem' }}>
+                      <div className="form-group"><label>Full Name</label><input type="text" value={nuName} onChange={e => setNuName(e.target.value)} placeholder="Executive's Name" /></div>
+                      <div className="form-group"><label>Personnel No.</label><input type="text" value={nuId} onChange={e => setNuId(e.target.value)} placeholder="C8642" /></div>
+                    </div>
+                    <div className="admin-form-row" style={{ marginBottom: '0.5rem' }}>
+                      <div className="form-group"><label>Date of Birth</label><input type="date" value={nuDob} onChange={e => setNuDob(e.target.value)} /></div>
+                      {isAdmin && <div className="form-group"><label>Department</label>
+                        <select value={nuDept} onChange={e => setNuDept(e.target.value)}><option value="">Select...</option>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+                      </div>}
+                      {isAdmin && <div className="form-group"><label>Role</label>
+                        <select value={nuRole} onChange={e => setNuRole(e.target.value)}><option value="executive">Executive</option><option value="incharge">Section In-charge</option></select>
+                      </div>}
+                    </div>
+                    <div className="form-group" style={{ marginBottom: '1rem' }}>
+                      <label>Designation</label>
+                      <select value={nuDesignation} onChange={e => setNuDesignation(e.target.value)}>
+                        {designationsList.map(d => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <button className="btn-success" onClick={addUser}>+ Add User</button>
+                  </div>
+
+                  {/* User List */}
+                  {viewDeptId ? (
+                    viewDeptUsers.length === 0 ? <div className="empty-state">No users in this department.</div> :
+                      viewDeptUsers.map((u, idx) => (
+                        <div key={u.id} className="admin-user-row">
+                          <div className="seniority-controls">
+                            <button className="seniority-btn" onClick={() => changeSeniority(u.id, 'up')} disabled={idx === 0}>▲</button>
+                            <span className="seniority-num">#{u.seniority}</span>
+                            <button className="seniority-btn" onClick={() => changeSeniority(u.id, 'down')} disabled={idx === viewDeptUsers.length - 1}>▼</button>
+                          </div>
+                          <div className="admin-user-info" style={{ marginLeft: '0.5rem' }}>
+                            <div className="admin-user-name">{u.name} <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>({u.id})</span></div>
+                            <div className="admin-user-meta">{u.designation || 'N/A'} · {roleLabel(u.role)} · DOB: {u.dob}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.3rem' }}>
+                            <button className="btn-ghost" onClick={() => resetToDefault(u.id)} title="Reset Password" style={{ fontSize: '0.72rem', padding: '0.3rem 0.5rem' }}>🔑 Reset PW</button>
+                            <button className="icon-btn danger" onClick={() => removeUser(u.id)} title="Remove User"><Icons.Trash /></button>
+                          </div>
+                        </div>
+                      ))
+                  ) : <div className="empty-state">{isAdmin ? 'Select a department above to manage users.' : 'No department assigned.'}</div>}
+                </div>
+              )}
+
+              {/* ===== SETTINGS TAB ===== */}
+              {adminTab === 'settings' && isAdmin && (
+                <div>
+                  <div className="admin-section-title">Password Management</div>
+                  <div className="admin-pw-section">
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Security notice: Client-side password resets are disabled. Users must log in directly or admins must use Firebase Console to assist users with lockouts.</p>
+                  </div>
+
+                  <div className="admin-section-title" style={{ marginTop: '1rem' }}>Export Data</div>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                    <button className="btn-success" onClick={exportData}><Icons.Download /> Download JSON</button>
+                    <button className="btn-secondary" onClick={() => setShowExport(!showExport)}>{showExport ? 'Hide' : 'View'} Data</button>
+                  </div>
+                  {showExport && (
+                    <div className="json-viewer">
+                      {JSON.stringify({
+                        departments,
+                        users: users.map(u => ({ id: u.id, name: u.name, role: u.role, departmentId: u.departmentId, seniority: u.seniority, dob: u.dob, requiresPasswordChange: u.requiresPasswordChange }))
+                      }, null, 2)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // DASHBOARD COMPONENT
+    // ============================================================
+    function Dashboard({ currentUser, users, departments, tasks, logout }) {
+      const [activeTab, setActiveTab] = useState('All tasks');
+      const [showAdmin, setShowAdmin] = useState(false);
+      const [showProfile, setShowProfile] = useState(false);
+      const [deleteModal, setDeleteModal] = useState(null);
+      const [completionModal, setCompletionModal] = useState(null);
+      const [cDate, setCDate] = useState('');
+      const [editingTaskId, setEditingTaskId] = useState(null);
+      const [formError, setFormError] = useState('');
+
+      const [profilePw, setProfilePw] = useState('');
+      const [profileConfirmPw, setProfileConfirmPw] = useState('');
+      const [profilePwMsg, setProfilePwMsg] = useState('');
+
+      const handleProfileChangePassword = async (e) => {
+        e.preventDefault();
+        setProfilePwMsg('');
+        if (profilePw !== profileConfirmPw) { setProfilePwMsg('Error: Passwords do not match.'); return; }
+        if (profilePw.length < 6) { setProfilePwMsg('Error: Wrong password size. (Password shall be 6-10 characters long.)'); return; }
+        try {
+          await firebase.auth().currentUser.updatePassword(profilePw);
+          setProfilePwMsg('Password updated securely via Firebase.');
+          setProfilePw('');
+          setProfileConfirmPw('');
+        } catch (err) {
+          setProfilePwMsg('Error: ' + err.message);
+        }
+      };
+
+      // Task form state
+      const [tName, setTName] = useState('');
+      const [tDesc, setTDesc] = useState('');
+      const [tAssignee, setTAssignee] = useState('');
+      const [tDate, setTDate] = useState('');
+      const [tTime, setTTime] = useState('');
+      const [tPriority, setTPriority] = useState('Medium');
+
+      const isAdmin = currentUser.role === 'admin';
+      const isIncharge = currentUser.role === 'incharge';
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      // Department-scoped assignee options
+      const assigneeOptions = useMemo(() => {
+        if (isAdmin) {
+          return departments.map(dept => ({
+            label: dept.name,
+            users: users.filter(u => u.departmentId === dept.id && u.role !== 'admin').sort((a, b) => a.seniority - b.seniority)
+          })).filter(g => g.users.length > 0);
+        }
+        const myDept = departments.find(d => d.id === currentUser.departmentId);
+        return [{
+          label: myDept ? myDept.name : 'My Department',
+          users: users.filter(u => u.departmentId === currentUser.departmentId).sort((a, b) => a.seniority - b.seniority)
+        }];
+      }, [users, departments, currentUser, isAdmin]);
+
+      const getDeptName = useCallback((deptId) => departments.find(d => d.id === deptId)?.name || '', [departments]);
+
+      const canEditDelete = useCallback((task) => {
+        if (isAdmin) return true;
+        if (task.assignedById === currentUser.id) return true;
+        if (isIncharge) {
+          const assignee = users.find(u => u.id === task.assignedToId);
+          return assignee && assignee.departmentId === currentUser.departmentId;
+        }
+        return false;
+      }, [isAdmin, isIncharge, currentUser, users]);
+
+      // Stats
+      const stats = useMemo(() => ({
+        active: tasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
+        pending: tasks.filter(t => t.status === 'pending' && t.date >= todayStr).length,
+        overdue: tasks.filter(t => t.status === 'pending' && t.date < todayStr).length,
+        completed: tasks.filter(t => t.status === 'completed').length
+      }), [tasks, todayStr]);
+
+      // Filtered & sorted tasks
+      const processedTasks = useMemo(() => {
+        let filtered = [...tasks];
+        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+        else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending' && t.date >= todayStr);
+        else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'pending' && t.date < todayStr);
+        else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
+        else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+        else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
+
+        const pw = { High: 3, Medium: 2, Low: 1 };
+        filtered.sort((a, b) => {
+          if (a.status === 'completed' && b.status !== 'completed') return 1;
+          if (a.status !== 'completed' && b.status === 'completed') return -1;
+
+          const aOver = a.status === 'pending' && a.date < todayStr;
+          const bOver = b.status === 'pending' && b.date < todayStr;
+          if (aOver && !bOver) return -1;
+          if (!aOver && bOver) return 1;
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return (pw[b.priority] || 0) - (pw[a.priority] || 0);
+        });
+        return filtered;
+      }, [tasks, activeTab, currentUser.id, todayStr]);
+
+      const handleEditClick = (task) => {
+        setEditingTaskId(task.id);
+        setTName(task.name); setTDesc(task.desc); setTAssignee(task.assignedToId);
+        setTDate(task.date); setTTime(task.time || ''); setTPriority(task.priority || 'Medium');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+
+      const cancelEdit = () => {
+        setEditingTaskId(null);
+        setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+      };
+
+      const handleCreateTask = async (e) => {
+        e.preventDefault();
+        if (!tName || !tDesc || !tAssignee || !tDate) { setFormError('Please fill all required fields.'); return; }
+        setFormError('');
+        const aUser = users.find(u => u.id === tAssignee);
+        if (!aUser) { setFormError('Invalid assignee.'); return; }
+
+        if (editingTaskId) {
+          await db.collection('todo_tasks').doc(editingTaskId).update({
+            name: tName, desc: tDesc, assignedToId: aUser.id, assignedToName: aUser.name,
+            assignedToSeniority: aUser.seniority || 0, departmentId: aUser.departmentId,
+            date: tDate, time: tTime, priority: tPriority
+          });
+          setEditingTaskId(null);
+        } else {
+          await db.collection('todo_tasks').add({
+            name: tName, desc: tDesc,
+            assignedById: currentUser.id, assignedByName: currentUser.name,
+            assignedBySeniority: currentUser.seniority || 0,
+            assignedToId: aUser.id, assignedToName: aUser.name,
+            assignedToSeniority: aUser.seniority || 0,
+            departmentId: aUser.departmentId, date: tDate, time: tTime,
+            priority: tPriority, status: 'pending', deletedBy: null,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+      };
+
+      const handleTaskAction = async (taskId, action) => {
+        if (action === 'complete') await db.collection('todo_tasks').doc(taskId).update({ status: 'completed' });
+        else if (action === 'reopen') await db.collection('todo_tasks').doc(taskId).update({ status: 'pending', completedOn: null });
+        else if (action === 'undo_delete') await db.collection('todo_tasks').doc(taskId).update({ status: 'pending', deletedBy: null });
+      };
+
+      const confirmCompleteOverdue = async () => {
+        if (!cDate) return;
+        if (cDate < completionModal.date) {
+          alert('Completion date cannot be before the task due date.');
+          return;
+        }
+        await db.collection('todo_tasks').doc(completionModal.id).update({ status: 'completed', completedOn: cDate });
+        setCompletionModal(null);
+      };
+
+      const confirmDelete = async (taskId) => {
+        await db.collection('todo_tasks').doc(taskId).update({ status: 'deleted', deletedBy: currentUser.name });
+        setDeleteModal(null);
+      };
+
+      const showDeletedTab = isAdmin || isIncharge;
+
+      return (
+        <div className="app-container">
+          {/* ===== HEADER ===== */}
+          <header className="app-header">
+            <div className="header-brand"><h1>Todo Task Manager</h1></div>
+            <div className="header-actions">
+              {(isAdmin || isIncharge) && (
+                <button className="btn-ghost" onClick={() => setShowAdmin(true)} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Icons.Settings /> {isAdmin ? 'Admin' : 'Manage'}
+                </button>
+              )}
+              <button className="btn-success" onClick={() => generatePDF(tasks, currentUser)} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <Icons.Download /> PDF Report
+              </button>
+              <div className="profile-pill" onClick={() => setShowProfile(true)} style={{ cursor: 'pointer' }} title="Show My Profile">
+                <div className="profile-icon"><Icons.User /></div>
+                <div className="profile-info">
+                  <span className="profile-name">{currentUser.name} {currentUser.role === 'incharge' && <span style={{ color: 'var(--danger)', fontWeight: 'bold' }}> (SIC)</span>}</span>
+                  <span className="profile-role">{currentUser.designation || roleLabel(currentUser.role)}</span>
+                </div>
+              </div>
+              <button onClick={logout} className="btn-logout" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                Logout <Icons.LogOut />
+              </button>
+            </div>
+          </header>
+
+          {/* ===== STATS ===== */}
+          <div className="dashboard-stats">
+            <div className="glass-panel stat-card">
+              <span className="stat-label">Active Tasks</span>
+              <span className="stat-value" style={{ color: 'var(--primary)' }}>{stats.active}</span>
+            </div>
+            <div className="glass-panel stat-card">
+              <span className="stat-label">Pending</span>
+              <span className="stat-value" style={{ color: 'var(--warning)' }}>{stats.pending}</span>
+            </div>
+            <div className="glass-panel stat-card">
+              <span className="stat-label">Overdue</span>
+              <span className="stat-value" style={{ color: 'var(--danger)' }}>{stats.overdue}</span>
+            </div>
+            <div className="glass-panel stat-card">
+              <span className="stat-label">Completed</span>
+              <span className="stat-value" style={{ color: 'var(--success)' }}>{stats.completed}</span>
+            </div>
+          </div>
+
+          {/* ===== MAIN CONTENT ===== */}
+          <div className="main-content">
+            <div className="task-feed">
+              {/* Tabs */}
+              <div className="tabs">
+                {['All tasks', 'Pending', 'Overdue', 'Completed', 'Assigned to me'].map(t => (
+                  <button key={t} className={`tab-btn ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>{t}</button>
+                ))}
+                {showDeletedTab && (
+                  <button className={`tab-btn ${activeTab === 'Deleted tasks' ? 'active' : ''}`} onClick={() => setActiveTab('Deleted tasks')}>Deleted tasks</button>
+                )}
+              </div>
+
+              {/* Task List */}
+              <div className="task-list">
+                {processedTasks.length === 0 ? (
+                  <div className="empty-state">No tasks found in this category.</div>
+                ) : processedTasks.map(task => {
+                  const isOverdue = task.status === 'pending' && task.date < todayStr;
+                  const badgeType = (task.assignedBySeniority ?? 0) <= (task.assignedToSeniority ?? 0) ? 'Assign' : 'Request';
+                  const taskDept = getDeptName(task.departmentId);
+                  const editable = canEditDelete(task);
+                  const canCompleteTask = task.assignedById === currentUser.id || task.assignedToId === currentUser.id;
+
+                  return (
+                    <div key={task.id} className={`glass-panel task-card priority-${(task.priority || 'medium').toLowerCase()} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
+                      <div className="task-header">
+                        <h4 className="task-title">{task.name}</h4>
+                        <div className="task-badges">
+                          <span className={`badge badge-${badgeType.toLowerCase()}`}>{badgeType}</span>
+                          <span className="badge badge-priority">{task.priority}</span>
+                          {taskDept && <span className="badge badge-dept">{taskDept}</span>}
+                          {isOverdue && <span className="badge badge-overdue">Overdue</span>}
+                        </div>
+                      </div>
+                      <p className="task-desc">{task.desc}</p>
+                      <div className="task-meta">
+                        <span><strong>From:</strong> {task.assignedByName}</span>
+                        <span><strong>To:</strong> {task.assignedToName}</span>
+                        <span><strong>Due:</strong> {task.date}</span>
+                        {task.time && <span><strong>Time:</strong> {task.time}</span>}
+                        {task.status === 'deleted' && <span style={{ color: 'var(--danger)' }}><strong>Deleted by:</strong> {task.deletedBy}</span>}
+                      </div>
+                      {task.status !== 'deleted' ? (
+                        <div className="task-actions">
+                          {canCompleteTask && task.status === 'pending' && (
+                            isOverdue ? (
+                              <button onClick={() => { setCompletionModal(task); setCDate(todayStr); }} className="btn-success" style={{ padding: '0.25rem 0.7rem', fontSize: '0.78rem' }}>Completed on</button>
+                            ) : (
+                              <button onClick={() => handleTaskAction(task.id, 'complete')} className="icon-btn success" title="Mark Completed"><Icons.Check /></button>
+                            )
+                          )}
+                          {canCompleteTask && task.status === 'completed' && (
+                            <button onClick={() => handleTaskAction(task.id, 'reopen')} className="btn-secondary" style={{ padding: '0.25rem 0.7rem', fontSize: '0.78rem' }}>Reopen</button>
+                          )}
+                          {editable && (
+                            <>
+                              <button onClick={() => handleEditClick(task)} className="icon-btn" title="Edit"><Icons.Edit /></button>
+                              <button onClick={() => setDeleteModal({ id: task.id, name: task.name })} className="icon-btn danger" title="Delete"><Icons.Trash /></button>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        editable && (
+                          <div className="task-actions">
+                            <button onClick={() => handleTaskAction(task.id, 'undo_delete')} className="btn-secondary" style={{ padding: '0.25rem 0.7rem', fontSize: '0.78rem' }}>Undo Delete</button>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ===== SIDEBAR — TASK FORM ===== */}
+            <div className="sidebar">
+              <div className="glass-panel task-form-panel">
+                <h3>{editingTaskId ? 'Edit Task' : 'Create Task'}</h3>
+                {formError && <div className="alert-warning">{formError}</div>}
+                <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                  <div className="form-group">
+                    <label>Task Name *</label>
+                    <input type="text" value={tName} onChange={e => setTName(e.target.value)} placeholder="Enter task name" />
+                  </div>
+                  <div className="form-group">
+                    <label>Description *</label>
+                    <textarea value={tDesc} onChange={e => setTDesc(e.target.value)} rows="3" placeholder="Describe the task..." />
+                  </div>
+                  <div className="form-group">
+                    <label>Assignee *</label>
+                    <select value={tAssignee} onChange={e => setTAssignee(e.target.value)}>
+                      <option value="">Select Assignee...</option>
+                      {assigneeOptions.map(group => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.users.map(u => <option key={u.id} value={u.id}>{u.name} ({roleLabel(u.role)})</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Date *</label>
+                      <input type="date" value={tDate} onChange={e => setTDate(e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label>Time (Optional)</label>
+                      <input type="time" value={tTime} onChange={e => setTTime(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label>Priority *</label>
+                    <select value={tPriority} onChange={e => setTPriority(e.target.value)}>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                    <button type="submit" className="btn-primary" style={{ flex: 1 }}>{editingTaskId ? 'Update Task' : 'Add Task'}</button>
+                    {editingTaskId && <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>}
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          {/* ===== PROFILE MODAL ===== */}
+          {showProfile && (
+            <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowProfile(false); }}>
+              <div className="glass-panel modal-content" style={{ maxWidth: '500px', width: '90%' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <h3 className="modal-title" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.4rem' }}><Icons.User /> My Profile</h3>
+                  <button className="admin-close-btn" onClick={() => setShowProfile(false)}>✕</button>
+                </div>
+
+                <div style={{ background: 'var(--bg-card)', padding: '1.5rem', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem', border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Full Name</span><br /><strong>{currentUser.name}</strong></div>
+                    <div><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Personnel No.</span><br /><strong>{currentUser.id}</strong></div>
+                    <div><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Role</span><br /><strong>{roleLabel(currentUser.role)}</strong></div>
+                    <div><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Designation</span><br /><strong>{currentUser.designation || 'N/A'}</strong></div>
+                    <div style={{ gridColumn: '1 / -1' }}><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Department</span><br /><strong>{getDeptName(currentUser.departmentId)}</strong></div>
+                  </div>
+                </div>
+
+                <h4 style={{ marginBottom: '1rem', color: 'var(--text)' }}>Change My Password</h4>
+                {profilePwMsg && <div className={profilePwMsg.startsWith('Error') ? 'alert-warning' : 'alert-success'} style={{ marginBottom: '1rem' }}>{profilePwMsg}</div>}
+
+                <form onSubmit={handleProfileChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>New Password</label>
+                    <input type="password" value={profilePw} onChange={e => setProfilePw(e.target.value)} required placeholder="Min 6 characters" minLength="4" />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>Confirm New Password</label>
+                    <input type="password" value={profileConfirmPw} onChange={e => setProfileConfirmPw(e.target.value)} required minLength="4" />
+                  </div>
+                  <button type="submit" className="btn-primary" style={{ marginTop: '0.5rem' }}>Update Password</button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* ===== ADMIN PANEL ===== */}
+          {showAdmin && <AdminPanel currentUser={currentUser} users={users} departments={departments} onClose={() => setShowAdmin(false)} />}
+
+          {/* ===== DELETE MODAL ===== */}
+          {deleteModal && (
+            <div className="modal-overlay">
+              <div className="glass-panel modal-content">
+                <h3 className="modal-title">Delete Task?</h3>
+                <p className="modal-body">Are you sure you want to delete "{deleteModal.name}"? It will be moved to the deleted tasks archive.</p>
+                <div className="modal-actions">
+                  <button onClick={() => setDeleteModal(null)} className="btn-secondary">Cancel</button>
+                  <button onClick={() => confirmDelete(deleteModal.id)} className="btn-danger">Yes, Delete</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===== COMPLETED MODAL ===== */}
+          {completionModal && (
+            <div className="modal-overlay">
+              <div className="glass-panel modal-content">
+                <h3 className="modal-title">Task Completion Date</h3>
+                <p className="modal-body">This task was due on <strong>{completionModal.date}</strong>. When was it actually completed?</p>
+                <div className="form-group" style={{ marginTop: '1rem' }}>
+                  <input type="date" value={cDate} onChange={e => setCDate(e.target.value)} min={completionModal.date} />
+                </div>
+                <div className="modal-actions" style={{ marginTop: '1.5rem' }}>
+                  <button onClick={() => setCompletionModal(null)} className="btn-secondary">Cancel</button>
+                  <button onClick={confirmCompleteOverdue} className="btn-success">Mark Completed</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // APP COMPONENT (Main State & Auth)
+    // ============================================================
+    function App() {
+      const [users, setUsers] = useState([]);
+      const [departments, setDepartments] = useState([]);
+      const [tasks, setTasks] = useState([]);
+      const [firestoreError, setFirestoreError] = useState('');
+      const [currentUser, setCurrentUser] = useState(null);
+      const [view, setView] = useState('login');
+      const [authError, setAuthError] = useState('');
+      const [authSuccess, setAuthSuccess] = useState('');
+
+      // Login state
+      const [loginId, setLoginId] = useState('');
+      const [loginPw, setLoginPw] = useState('');
+
+      // Force password change state
+      const [fcNewPw, setFcNewPw] = useState('');
+      const [fcConfirmPw, setFcConfirmPw] = useState('');
+
+      // ---- Firebase Subscriptions ----
+      useEffect(() => {
+        const unsubAuth = auth.onAuthStateChanged(async (firebaseUser) => {
+          if (firebaseUser) {
+            const personnelNo = firebaseUser.email.split('@')[0].toUpperCase();
+            try {
+              const doc = await db.collection('todo_users').doc(personnelNo).get();
+              if (doc.exists) {
+                setCurrentUser(doc.data());
+              } else {
+                console.error(`User document not found in Firestore for: ${personnelNo}`);
+                setAuthError(`User profile not found in database. Contact your administrator to create it.`);
+                auth.signOut();
+                setCurrentUser(null);
+              }
+            } catch (err) {
+              console.error('Auth sync error:', err);
+              if (err.code === 'permission-denied') {
+                setAuthError('Permission denied accessing user profile. Check Firestore rules.');
+              } else {
+                setAuthError('Failed to sync user profile. ' + err.message);
+              }
+            }
+          } else {
+            setCurrentUser(null);
+          }
+        });
+        return () => unsubAuth();
+      }, []);
+
+      useEffect(() => {
+        if (!currentUser) return;
+        const handleFirestoreError = (err, collectionName) => {
+          console.error(`Firestore ${collectionName} error:`, err);
+          if (err.code === 'permission-denied') setFirestoreError(`Permission denied on "${collectionName}". Please verify Firestore rules are deployed correctly.`);
+          else if (err.code === 'unavailable') setFirestoreError('Firestore is temporarily unavailable. Retrying...');
+          else setFirestoreError(`Database error (${collectionName}): ${err.message}`);
+        };
+
+        const unsubUsers = db.collection('todo_users').onSnapshot(
+          snap => { setFirestoreError(''); setUsers(snap.docs.map(d => d.data())); },
+          err => handleFirestoreError(err, 'todo_users')
+        );
+
+        const unsubDepts = db.collection('todo_departments').onSnapshot(
+          snap => { setDepartments(snap.docs.map(d => ({ ...d.data(), id: d.id }))); },
+          err => handleFirestoreError(err, 'todo_departments')
+        );
+
+        const unsubTasks = db.collection('todo_tasks').onSnapshot(
+          snap => {
+            const allTasks = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+            if (currentUser.role === 'admin') {
+              setTasks(allTasks);
+            } else {
+              setTasks(allTasks.filter(t => t.departmentId === currentUser.departmentId));
+            }
+          },
+          err => handleFirestoreError(err, 'todo_tasks')
+        );
+
+        return () => { unsubUsers(); unsubDepts(); unsubTasks(); };
+      }, [currentUser]);
+
+      // ---- Session management ----
+      useEffect(() => {
+        if (currentUser) {
+          setView(currentUser.requiresPasswordChange ? 'forcePasswordChange' : 'dashboard');
+        } else {
+          setView('login');
+        }
+      }, [currentUser]);
+
+      // ---- Auth Handlers ----
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        setAuthError(''); setAuthSuccess('');
+        try {
+          const cleanLoginId = loginId.trim().toUpperCase();
+          const dummyEmail = `${cleanLoginId}@todomec.internal`;
+          await auth.signInWithEmailAndPassword(dummyEmail, loginPw);
+          setLoginPw('');
+        } catch (error) {
+          setAuthError('Invalid credentials. Please try again.');
+        }
+      };
+
+      const handleForceChange = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        if (fcNewPw.length < 6) { setAuthError('Password must be at least 6 characters.'); return; }
+        if (fcNewPw !== fcConfirmPw) { setAuthError('Passwords do not match.'); return; }
+
+        try {
+          const user = auth.currentUser;
+          await user.updatePassword(fcNewPw);
+          await db.collection('todo_users').doc(currentUser.id).update({ requiresPasswordChange: false });
+          setCurrentUser({ ...currentUser, requiresPasswordChange: false });
+          setFcNewPw(''); setFcConfirmPw('');
+        } catch (error) {
+          setAuthError('Error updating password. You may need to log out and try again.');
+        }
+      };
+
+      const logout = async () => {
+        await auth.signOut();
+        setCurrentUser(null);
+        setLoginId(''); setLoginPw('');
+        setView('login');
+      };
+
+      const switchView = (v) => { setView(v); setAuthError(''); setAuthSuccess(''); };
+
+      // ================================================================
+      // RENDER: LOGIN
+      // ================================================================
+      // ================================================================
+      // RENDER: FIRESTORE ERROR
+      // ================================================================
+      if (firestoreError) {
+        return (
+          <div className="auth-container">
+            <div className="glass-panel auth-box">
+              <div className="auth-header">
+                <h1>Todo Task Manager</h1>
+                <p>Connection Issue</p>
+              </div>
+              <div className="alert-warning" style={{ marginBottom: '1rem' }}>
+                <strong>⚠ Database Error:</strong> {firestoreError}
+              </div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                <p><strong>Troubleshooting steps:</strong></p>
+                <ol style={{ paddingLeft: '1.25rem', marginTop: '0.5rem' }}>
+                  <li>Check that Firestore security rules are deployed</li>
+                  <li>Verify your Firebase project configuration</li>
+                  <li>Ensure you have an active internet connection</li>
+                  <li>Check the browser console for details</li>
+                </ol>
+              </div>
+              <button className="btn-primary" style={{ marginTop: '1rem', width: '100%' }} onClick={() => window.location.reload()}>Retry Connection</button>
+            </div>
+          </div>
+        );
+      }
+
+      if (!currentUser && view === 'login') {
+        return (
+          <div className="auth-container">
+            <div className="glass-panel auth-box">
+              <div className="auth-header">
+                <h1>Todo Task Manager</h1>
+                <p>Sign in to your account</p>
+              </div>
+              {authError && <div className="alert-warning">{authError}</div>}
+              {authSuccess && <div className="alert-success">{authSuccess}</div>}
+              <form onSubmit={handleLogin} autoComplete="off" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="form-group">
+                  <label>Personnel No.</label>
+                  <input type="text" value={loginId} onChange={e => setLoginId(e.target.value.trim())} required placeholder="Enter Personnel No." />
+                </div>
+                <div className="form-group">
+                  <label>Password</label>
+                  <input type="password" value={loginPw} onChange={e => setLoginPw(e.target.value)} required autoComplete="new-password" placeholder="Enter your password" />
+                </div>
+                <button type="submit" className="btn-primary">Sign In</button>
+              </form>
+              <div className="auth-link">
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Contact Admin if you forgot your password.</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+
+
+      // ================================================================
+      // RENDER: FORCE PASSWORD CHANGE (First Login)
+      // ================================================================
+      if (currentUser && view === 'forcePasswordChange') {
+        return (
+          <div className="auth-container">
+            <div className="glass-panel auth-box">
+              <div className="auth-header">
+                <h1>Welcome, {currentUser.name}!</h1>
+                <p>Please set a new password for your first login</p>
+              </div>
+              {authError && <div className="alert-warning">{authError}</div>}
+              <form onSubmit={handleForceChange} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="form-group">
+                  <label>New Password</label>
+                  <input type="password" value={fcNewPw} onChange={e => setFcNewPw(e.target.value)} required autoComplete="new-password" placeholder="Min 6 characters" />
+                </div>
+                <div className="form-group">
+                  <label>Confirm New Password</label>
+                  <input type="password" value={fcConfirmPw} onChange={e => setFcConfirmPw(e.target.value)} required autoComplete="new-password" />
+                </div>
+                <button type="submit" className="btn-primary">Set Password &amp; Continue</button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      // ================================================================
+      // RENDER: DASHBOARD
+      // ================================================================
+      if (currentUser && view === 'dashboard') {
+        return <Dashboard currentUser={currentUser} users={users} departments={departments} tasks={tasks} logout={logout} />;
+      }
+
+      // Fallback
+      return <div className="auth-container"><div className="glass-panel auth-box"><p>Loading...</p></div></div>;
+    }
+
+    // ============================================================
+    // ROOT RENDER
+    // ============================================================
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('SW Registered', reg))
+          .catch(err => console.log('SW Registration Failed', err));
+      });
+    }
+  </script>
+</body>
+
+</html>

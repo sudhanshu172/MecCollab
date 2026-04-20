@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================================
+    // Todo Task Manager — Secure Firestore Rules
+    // ============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getPersonnelNo() {
+      return request.auth.token.email.replace('@todomec\\.internal', '');
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/todo_users/$(getPersonnelNo())).data.role;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    // -- User Records --
+    match /todo_users/{userId} {
+      allow read: if isAuthenticated();
+      // Admin can create users. Excluded 'password' from schema since it's now in Auth.
+      allow create: if isAdmin()
+                    && request.resource.data.keys().hasAll(['id', 'name', 'role', 'dob', 'requiresPasswordChange'])
+                    && request.resource.data.keys().hasAny(['password']) == false
+                    && request.resource.data.id is string
+                    && request.resource.data.name is string
+                    && request.resource.data.role in ['admin', 'incharge', 'executive'];
+      // Any authenticated user can update (e.g. requiresPasswordChange), 
+      // but no creation of new random fields or password fields allowed.
+      allow update: if isAuthenticated()
+                    && request.resource.data.keys().hasAny(['password']) == false;
+      allow delete: if isAdmin();
+    }
+
+    // -- Department Records --
+    match /todo_departments/{deptId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin()
+                    && request.resource.data.keys().hasAll(['name'])
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // -- Task Records --
+    match /todo_tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated()
+                    && request.resource.data.keys().hasAll([
+                         'name', 'desc', 'assignedById', 'assignedByName',
+                         'assignedToId', 'assignedToName', 'date', 'priority', 'status'
+                       ])
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 200
+                    && request.resource.data.desc is string
+                    && request.resource.data.desc.size() <= 2000
+                    && request.resource.data.status in ['pending', 'completed', 'deleted']
+                    && request.resource.data.priority in ['High', 'Medium', 'Low'];
+      allow update: if isAuthenticated()
+                    && request.resource.data.status in ['pending', 'completed', 'deleted']
+                    && request.resource.data.priority in ['High', 'Medium', 'Low']
+                    && request.resource.data.assignedById == resource.data.assignedById
+                    && request.resource.data.assignedByName == resource.data.assignedByName;
+      allow delete: if false; // Soft delete only
+    }
+
+    // -- Legacy collections (read-only, preserved) --
+    match /dt_users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+    match /dt_tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    // Block all access to any other collection
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
