@@ -561,19 +561,31 @@
         }
       };
 
-      // Task form state
+      // Task form state — Department Tasks
       const [tName, setTName] = useState('');
       const [tDesc, setTDesc] = useState('');
-      const [tAssignee, setTAssignee] = useState('');
+      const [tAssignees, setTAssignees] = useState([]); // Array of assignee IDs
       const [tDate, setTDate] = useState('');
       const [tTime, setTTime] = useState('');
       const [tPriority, setTPriority] = useState('Medium');
+
+      // Task form state — External Tasks
+      const [etName, setEtName] = useState('');
+      const [etDesc, setEtDesc] = useState('');
+      const [etAssignees, setEtAssignees] = useState([]); // Array of assignee IDs
+      const [etDate, setEtDate] = useState('');
+      const [etTime, setEtTime] = useState('');
+      const [etPriority, setEtPriority] = useState('Medium');
+      const [showExternalForm, setShowExternalForm] = useState(false);
+
+      // Dashboard section toggle
+      const [activeSection, setActiveSection] = useState('department'); // 'department' or 'external'
 
       const isAdmin = currentUser.role === 'admin';
       const isIncharge = currentUser.role === 'incharge';
       const todayStr = new Date().toISOString().split('T')[0];
 
-      // Department-scoped assignee options
+      // Department-scoped assignee options (for internal tasks)
       const assigneeOptions = useMemo(() => {
         if (isAdmin) {
           return departments.map(dept => ({
@@ -588,34 +600,60 @@
         }];
       }, [users, departments, currentUser, isAdmin]);
 
+      // All-department assignee options (for external tasks) — only visible to admin/incharge
+      const externalAssigneeOptions = useMemo(() => {
+        return departments.map(dept => ({
+          label: dept.name,
+          users: users.filter(u => u.departmentId === dept.id && u.role !== 'admin').sort((a, b) => a.seniority - b.seniority)
+        })).filter(g => g.users.length > 0);
+      }, [users, departments]);
+
+      // Internal tasks (department-scoped)
+      const internalTasks = useMemo(() => {
+        const internal = tasks.filter(t => !t.isExternal);
+        return isAdmin ? internal : internal.filter(t => t.departmentId === currentUser.departmentId);
+      }, [tasks, isAdmin, currentUser.departmentId]);
+
+      // External tasks (cross-department)
+      const externalTasks = useMemo(() => {
+        return tasks.filter(t => t.isExternal && (t.assigneeIds?.includes(currentUser.id) || t.assignedById === currentUser.id));
+      }, [tasks, currentUser.id]);
+
       const getDeptName = useCallback((deptId) => departments.find(d => d.id === deptId)?.name || '', [departments]);
 
       const canEditDelete = useCallback((task) => {
         if (isAdmin) return true;
         if (task.assignedById === currentUser.id) return true;
-        if (isIncharge) {
-          const assignee = users.find(u => u.id === task.assignedToId);
-          return assignee && assignee.departmentId === currentUser.departmentId;
+        if (isIncharge && !task.isExternal) {
+          // For internal tasks, in-charge can edit/delete if task is in their department
+          return task.departmentId === currentUser.departmentId;
         }
         return false;
-      }, [isAdmin, isIncharge, currentUser, users]);
+      }, [isAdmin, isIncharge, currentUser, tasks]);
 
-      // Stats
-      const stats = useMemo(() => ({
-        active: tasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
-        pending: tasks.filter(t => t.status === 'pending' && t.date >= todayStr).length,
-        overdue: tasks.filter(t => t.status === 'pending' && t.date < todayStr).length,
-        completed: tasks.filter(t => t.status === 'completed').length
-      }), [tasks, todayStr]);
+      // Stats — split by section
+      const internalStats = useMemo(() => ({
+        active: internalTasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
+        pending: internalTasks.filter(t => t.status === 'pending' && t.date >= todayStr).length,
+        overdue: internalTasks.filter(t => t.status === 'pending' && t.date < todayStr).length,
+        completed: internalTasks.filter(t => t.status === 'completed').length
+      }), [internalTasks, todayStr]);
 
-      // Filtered & sorted tasks
-      const processedTasks = useMemo(() => {
-        let filtered = [...tasks];
+      const externalStats = useMemo(() => ({
+        active: externalTasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
+        pending: externalTasks.filter(t => t.status === 'pending' && t.date >= todayStr).length,
+        overdue: externalTasks.filter(t => t.status === 'pending' && t.date < todayStr).length,
+        completed: externalTasks.filter(t => t.status === 'completed').length
+      }), [externalTasks, todayStr]);
+
+      // Filtered & sorted tasks — Internal Tasks
+      const processedInternalTasks = useMemo(() => {
+        let filtered = [...internalTasks];
         if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
         else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending' && t.date >= todayStr);
         else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'pending' && t.date < todayStr);
         else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
-        else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+        else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assigneeIds?.includes(currentUser.id));
         else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
 
         const pw = { High: 3, Medium: 2, Low: 1 };
@@ -631,53 +669,182 @@
           return (pw[b.priority] || 0) - (pw[a.priority] || 0);
         });
         return filtered;
-      }, [tasks, activeTab, currentUser.id, todayStr]);
+      }, [internalTasks, activeTab, currentUser.id, todayStr]);
+
+      // Filtered & sorted tasks — External Tasks
+      const processedExternalTasks = useMemo(() => {
+        let filtered = [...externalTasks];
+        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+        else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending' && t.date >= todayStr);
+        else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'pending' && t.date < todayStr);
+        else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
+        else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assigneeIds?.includes(currentUser.id));
+        else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
+
+        const pw = { High: 3, Medium: 2, Low: 1 };
+        filtered.sort((a, b) => {
+          if (a.status === 'completed' && b.status !== 'completed') return 1;
+          if (a.status !== 'completed' && b.status === 'completed') return -1;
+
+          const aOver = a.status === 'pending' && a.date < todayStr;
+          const bOver = b.status === 'pending' && b.date < todayStr;
+          if (aOver && !bOver) return -1;
+          if (!aOver && bOver) return 1;
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return (pw[b.priority] || 0) - (pw[a.priority] || 0);
+        });
+        return filtered;
+      }, [externalTasks, activeTab, currentUser.id, todayStr]);
 
       const handleEditClick = (task) => {
         setEditingTaskId(task.id);
-        setTName(task.name); setTDesc(task.desc); setTAssignee(task.assignedToId);
-        setTDate(task.date); setTTime(task.time || ''); setTPriority(task.priority || 'Medium');
+        setTName(task.name);
+        setTDesc(task.desc);
+        setTAssignees(task.assigneeIds || []);
+        setTDate(task.date);
+        setTTime(task.time || '');
+        setTPriority(task.priority || 'Medium');
         window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
       const cancelEdit = () => {
         setEditingTaskId(null);
-        setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+        setTName('');
+        setTDesc('');
+        setTAssignees([]);
+        setTDate('');
+        setTTime('');
+        setTPriority('Medium');
       };
 
       const handleCreateTask = async (e) => {
         e.preventDefault();
-        if (!tName || !tDesc || !tAssignee || !tDate) { setFormError('Please fill all required fields.'); return; }
+        if (!tName || !tDesc || tAssignees.length === 0 || !tDate) {
+          setFormError('Please fill all required fields and select at least one assignee.');
+          return;
+        }
         setFormError('');
-        const aUser = users.find(u => u.id === tAssignee);
-        if (!aUser) { setFormError('Invalid assignee.'); return; }
+
+        const selectedUsers = tAssignees.map(id => users.find(u => u.id === id)).filter(Boolean);
+        if (selectedUsers.length === 0) {
+          setFormError('Invalid assignees selected.');
+          return;
+        }
+
+        const assigneeIds = selectedUsers.map(u => u.id);
+        const assignees = selectedUsers.map(u => ({ id: u.id, name: u.name, departmentId: u.departmentId }));
+        const deptId = selectedUsers[0].departmentId; // Use first assignee's dept for internal tasks
 
         if (editingTaskId) {
           await db.collection('todo_tasks').doc(editingTaskId).update({
-            name: tName, desc: tDesc, assignedToId: aUser.id, assignedToName: aUser.name,
-            assignedToSeniority: aUser.seniority || 0, departmentId: aUser.departmentId,
-            date: tDate, time: tTime, priority: tPriority
+            name: tName,
+            desc: tDesc,
+            assigneeIds: assigneeIds,
+            assignees: assignees,
+            departmentId: deptId,
+            date: tDate,
+            time: tTime,
+            priority: tPriority
           });
           setEditingTaskId(null);
         } else {
           await db.collection('todo_tasks').add({
-            name: tName, desc: tDesc,
-            assignedById: currentUser.id, assignedByName: currentUser.name,
+            name: tName,
+            desc: tDesc,
+            assignedById: currentUser.id,
+            assignedByName: currentUser.name,
             assignedBySeniority: currentUser.seniority || 0,
-            assignedToId: aUser.id, assignedToName: aUser.name,
-            assignedToSeniority: aUser.seniority || 0,
-            departmentId: aUser.departmentId, date: tDate, time: tTime,
-            priority: tPriority, status: 'pending', deletedBy: null,
+            assigneeIds: assigneeIds,
+            assignees: assignees,
+            departmentId: deptId,
+            date: tDate,
+            time: tTime,
+            priority: tPriority,
+            status: 'pending',
+            isExternal: false,
+            completedBy: [],
+            deletedBy: null,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           });
         }
-        setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+        setTName('');
+        setTDesc('');
+        setTAssignees([]);
+        setTDate('');
+        setTTime('');
+        setTPriority('Medium');
       };
 
       const handleTaskAction = async (taskId, action) => {
-        if (action === 'complete') await db.collection('todo_tasks').doc(taskId).update({ status: 'completed' });
-        else if (action === 'reopen') await db.collection('todo_tasks').doc(taskId).update({ status: 'pending', completedOn: null });
-        else if (action === 'undo_delete') await db.collection('todo_tasks').doc(taskId).update({ status: 'pending', deletedBy: null });
+        const task = [...internalTasks, ...externalTasks].find(t => t.id === taskId);
+        if (!task) return;
+
+        if (action === 'complete') {
+          const updatedCompletedBy = [...(task.completedBy || []), currentUser.id];
+          const allCompleted = updatedCompletedBy.length === task.assigneeIds.length;
+          
+          await db.collection('todo_tasks').doc(taskId).update({
+            completedBy: updatedCompletedBy,
+            status: allCompleted ? 'completed' : 'pending'
+          });
+        } else if (action === 'reopen') {
+          await db.collection('todo_tasks').doc(taskId).update({
+            status: 'pending',
+            completedOn: null,
+            completedBy: []
+          });
+        } else if (action === 'undo_delete') {
+          await db.collection('todo_tasks').doc(taskId).update({
+            status: 'pending',
+            deletedBy: null
+          });
+        }
+      };
+
+      const handleCreateExternalTask = async (e) => {
+        e.preventDefault();
+        if (!etName || !etDesc || etAssignees.length === 0 || !etDate) {
+          setFormError('Please fill all required fields and select at least one assignee.');
+          return;
+        }
+        setFormError('');
+
+        const selectedUsers = etAssignees.map(id => users.find(u => u.id === id)).filter(Boolean);
+        if (selectedUsers.length === 0) {
+          setFormError('Invalid assignees selected.');
+          return;
+        }
+
+        const assigneeIds = selectedUsers.map(u => u.id);
+        const assignees = selectedUsers.map(u => ({ id: u.id, name: u.name, departmentId: u.departmentId }));
+
+        await db.collection('todo_tasks').add({
+          name: etName,
+          desc: etDesc,
+          assignedById: currentUser.id,
+          assignedByName: currentUser.name,
+          assignedBySeniority: currentUser.seniority || 0,
+          assigneeIds: assigneeIds,
+          assignees: assignees,
+          departmentId: 'external',
+          date: etDate,
+          time: etTime,
+          priority: etPriority,
+          status: 'pending',
+          isExternal: true,
+          completedBy: [],
+          deletedBy: null,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        setEtName('');
+        setEtDesc('');
+        setEtAssignees([]);
+        setEtDate('');
+        setEtTime('');
+        setEtPriority('Medium');
+        setShowExternalForm(false);
+        alert('External task created successfully!');
       };
 
       const confirmCompleteOverdue = async () => {
@@ -686,12 +853,22 @@
           alert('Completion date cannot be before the task due date.');
           return;
         }
-        await db.collection('todo_tasks').doc(completionModal.id).update({ status: 'completed', completedOn: cDate });
+        const updatedCompletedBy = [...(completionModal.completedBy || []), currentUser.id];
+        const allCompleted = updatedCompletedBy.length === completionModal.assigneeIds.length;
+        
+        await db.collection('todo_tasks').doc(completionModal.id).update({
+          status: allCompleted ? 'completed' : 'pending',
+          completedOn: cDate,
+          completedBy: updatedCompletedBy
+        });
         setCompletionModal(null);
       };
 
       const confirmDelete = async (taskId) => {
-        await db.collection('todo_tasks').doc(taskId).update({ status: 'deleted', deletedBy: currentUser.name });
+        await db.collection('todo_tasks').doc(taskId).update({
+          status: 'deleted',
+          deletedBy: currentUser.name
+        });
         setDeleteModal(null);
       };
 
@@ -724,24 +901,75 @@
             </div>
           </header>
 
+          {/* ===== SECTION TOGGLE ===== */}
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', justifyContent: 'center' }}>
+            <button 
+              className={`btn-secondary ${activeSection === 'department' ? '' : ''}`}
+              onClick={() => setActiveSection('department')}
+              style={{ 
+                background: activeSection === 'department' ? 'var(--primary)' : 'var(--border-light)',
+                color: activeSection === 'department' ? 'white' : 'var(--text-secondary)',
+                fontWeight: activeSection === 'department' ? '600' : '500'
+              }}
+            >
+              Department Tasks
+            </button>
+            {(isAdmin || isIncharge) && (
+              <button 
+                className={`btn-secondary ${activeSection === 'external' ? '' : ''}`}
+                onClick={() => setActiveSection('external')}
+                style={{ 
+                  background: activeSection === 'external' ? 'var(--primary)' : 'var(--border-light)',
+                  color: activeSection === 'external' ? 'white' : 'var(--text-secondary)',
+                  fontWeight: activeSection === 'external' ? '600' : '500'
+                }}
+              >
+                External Tasks
+              </button>
+            )}
+          </div>
+
           {/* ===== STATS ===== */}
           <div className="dashboard-stats">
-            <div className="glass-panel stat-card">
-              <span className="stat-label">Active Tasks</span>
-              <span className="stat-value" style={{ color: 'var(--primary)' }}>{stats.active}</span>
-            </div>
-            <div className="glass-panel stat-card">
-              <span className="stat-label">Pending</span>
-              <span className="stat-value" style={{ color: 'var(--warning)' }}>{stats.pending}</span>
-            </div>
-            <div className="glass-panel stat-card">
-              <span className="stat-label">Overdue</span>
-              <span className="stat-value" style={{ color: 'var(--danger)' }}>{stats.overdue}</span>
-            </div>
-            <div className="glass-panel stat-card">
-              <span className="stat-label">Completed</span>
-              <span className="stat-value" style={{ color: 'var(--success)' }}>{stats.completed}</span>
-            </div>
+            {activeSection === 'department' ? (
+              <>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Active Tasks</span>
+                  <span className="stat-value" style={{ color: 'var(--primary)' }}>{internalStats.active}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Pending</span>
+                  <span className="stat-value" style={{ color: 'var(--warning)' }}>{internalStats.pending}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Overdue</span>
+                  <span className="stat-value" style={{ color: 'var(--danger)' }}>{internalStats.overdue}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Completed</span>
+                  <span className="stat-value" style={{ color: 'var(--success)' }}>{internalStats.completed}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Active Tasks</span>
+                  <span className="stat-value" style={{ color: 'var(--primary)' }}>{externalStats.active}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Pending</span>
+                  <span className="stat-value" style={{ color: 'var(--warning)' }}>{externalStats.pending}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Overdue</span>
+                  <span className="stat-value" style={{ color: 'var(--danger)' }}>{externalStats.overdue}</span>
+                </div>
+                <div className="glass-panel stat-card">
+                  <span className="stat-label">Completed</span>
+                  <span className="stat-value" style={{ color: 'var(--success)' }}>{externalStats.completed}</span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* ===== MAIN CONTENT ===== */}
@@ -759,14 +987,18 @@
 
               {/* Task List */}
               <div className="task-list">
-                {processedTasks.length === 0 ? (
+                {(activeSection === 'department' ? processedInternalTasks : processedExternalTasks).length === 0 ? (
                   <div className="empty-state">No tasks found in this category.</div>
-                ) : processedTasks.map(task => {
+                ) : (activeSection === 'department' ? processedInternalTasks : processedExternalTasks).map(task => {
                   const isOverdue = task.status === 'pending' && task.date < todayStr;
-                  const badgeType = (task.assignedBySeniority ?? 0) <= (task.assignedToSeniority ?? 0) ? 'Assign' : 'Request';
-                  const taskDept = getDeptName(task.departmentId);
+                  const currentUserCompleted = task.completedBy?.includes(currentUser.id);
+                  const allCompleted = task.completedBy?.length === task.assigneeIds?.length;
+                  const pendingCompletionFrom = task.assignees?.filter(a => !task.completedBy?.includes(a.id)) || [];
+                  
+                  const badgeType = (task.assignedBySeniority ?? 0) <= (Math.min(...(task.assignees?.map(a => users.find(u => u.id === a.id)?.seniority || 0) || [0])) ?? 0) ? 'Assign' : 'Request';
+                  const taskDept = task.isExternal ? 'External' : getDeptName(task.departmentId);
                   const editable = canEditDelete(task);
-                  const canCompleteTask = task.assignedById === currentUser.id || task.assignedToId === currentUser.id;
+                  const canCompleteTask = task.assigneeIds?.includes(currentUser.id);
 
                   return (
                     <div key={task.id} className={`glass-panel task-card priority-${(task.priority || 'medium').toLowerCase()} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
@@ -777,24 +1009,39 @@
                           <span className="badge badge-priority">{task.priority}</span>
                           {taskDept && <span className="badge badge-dept">{taskDept}</span>}
                           {isOverdue && <span className="badge badge-overdue">Overdue</span>}
+                          {allCompleted && <span className="badge badge-success">✓ Completed</span>}
+                          {!allCompleted && task.completedBy?.length > 0 && (
+                            <span className="badge" style={{ background: '#dbeafe', color: '#1d4ed8' }}>
+                              ✓ {task.completedBy.length}/{task.assigneeIds.length}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <p className="task-desc">{task.desc}</p>
                       <div className="task-meta">
                         <span><strong>From:</strong> {task.assignedByName}</span>
-                        <span><strong>To:</strong> {task.assignedToName}</span>
+                        <span><strong>To:</strong> {task.assignees?.map(a => a.name).join(', ')}</span>
+                        {allCompleted && task.completedBy?.length > 0 && (
+                          <span><strong>Completed by:</strong> {task.completedBy.map(id => users.find(u => u.id === id)?.name).filter(Boolean).join(', ')}</span>
+                        )}
+                        {!allCompleted && pendingCompletionFrom.length > 0 && (
+                          <span style={{ color: 'var(--warning)' }}><strong>Awaiting:</strong> {pendingCompletionFrom.map(a => a.name).join(', ')}</span>
+                        )}
                         <span><strong>Due:</strong> {task.date}</span>
                         {task.time && <span><strong>Time:</strong> {task.time}</span>}
                         {task.status === 'deleted' && <span style={{ color: 'var(--danger)' }}><strong>Deleted by:</strong> {task.deletedBy}</span>}
                       </div>
                       {task.status !== 'deleted' ? (
                         <div className="task-actions">
-                          {canCompleteTask && task.status === 'pending' && (
+                          {canCompleteTask && task.status === 'pending' && !currentUserCompleted && (
                             isOverdue ? (
                               <button onClick={() => { setCompletionModal(task); setCDate(todayStr); }} className="btn-success" style={{ padding: '0.25rem 0.7rem', fontSize: '0.78rem' }}>Completed on</button>
                             ) : (
                               <button onClick={() => handleTaskAction(task.id, 'complete')} className="icon-btn success" title="Mark Completed"><Icons.Check /></button>
                             )
+                          )}
+                          {canCompleteTask && currentUserCompleted && (
+                            <button disabled className="icon-btn success" title="You marked this complete" style={{ opacity: 0.6, cursor: 'default' }}>✓</button>
                           )}
                           {canCompleteTask && task.status === 'completed' && (
                             <button onClick={() => handleTaskAction(task.id, 'reopen')} className="btn-secondary" style={{ padding: '0.25rem 0.7rem', fontSize: '0.78rem' }}>Reopen</button>
@@ -821,53 +1068,173 @@
 
             {/* ===== SIDEBAR — TASK FORM ===== */}
             <div className="sidebar">
-              <div className="glass-panel task-form-panel">
-                <h3>{editingTaskId ? 'Edit Task' : 'Create Task'}</h3>
-                {formError && <div className="alert-warning">{formError}</div>}
-                <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                  <div className="form-group">
-                    <label>Task Name *</label>
-                    <input type="text" value={tName} onChange={e => setTName(e.target.value)} placeholder="Enter task name" />
-                  </div>
-                  <div className="form-group">
-                    <label>Description *</label>
-                    <textarea value={tDesc} onChange={e => setTDesc(e.target.value)} rows="3" placeholder="Describe the task..." />
-                  </div>
-                  <div className="form-group">
-                    <label>Assignee *</label>
-                    <select value={tAssignee} onChange={e => setTAssignee(e.target.value)}>
-                      <option value="">Select Assignee...</option>
-                      {assigneeOptions.map(group => (
-                        <optgroup key={group.label} label={group.label}>
-                          {group.users.map(u => <option key={u.id} value={u.id}>{u.name} ({roleLabel(u.role)})</option>)}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="form-row">
+              {activeSection === 'department' ? (
+                <div className="glass-panel task-form-panel">
+                  <h3>{editingTaskId ? 'Edit Task' : 'Create Task'}</h3>
+                  {formError && <div className="alert-warning">{formError}</div>}
+                  <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div className="form-group">
-                      <label>Date *</label>
-                      <input type="date" value={tDate} onChange={e => setTDate(e.target.value)} />
+                      <label>Task Name *</label>
+                      <input type="text" value={tName} onChange={e => setTName(e.target.value)} placeholder="Enter task name" />
                     </div>
                     <div className="form-group">
-                      <label>Time (Optional)</label>
-                      <input type="time" value={tTime} onChange={e => setTTime(e.target.value)} />
+                      <label>Description *</label>
+                      <textarea value={tDesc} onChange={e => setTDesc(e.target.value)} rows="3" placeholder="Describe the task..." />
                     </div>
-                  </div>
-                  <div className="form-group">
-                    <label>Priority *</label>
-                    <select value={tPriority} onChange={e => setTPriority(e.target.value)}>
-                      <option value="High">High</option>
-                      <option value="Medium">Medium</option>
-                      <option value="Low">Low</option>
-                    </select>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
-                    <button type="submit" className="btn-primary" style={{ flex: 1 }}>{editingTaskId ? 'Update Task' : 'Add Task'}</button>
-                    {editingTaskId && <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>}
-                  </div>
-                </form>
-              </div>
+                    <div className="form-group">
+                      <label>Assignees * (Multi-select)</label>
+                      <div style={{ border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.5rem', maxHeight: '200px', overflowY: 'auto', background: 'rgba(255,255,255,0.95)' }}>
+                        {assigneeOptions.map(group => (
+                          <div key={group.label}>
+                            <div style={{ fontWeight: '600', fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.5rem 0.3rem', textTransform: 'uppercase' }}>
+                              {group.label}
+                            </div>
+                            {group.users.map(u => (
+                              <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.5rem', cursor: 'pointer' }}>
+                                <input 
+                                  type="checkbox" 
+                                  checked={tAssignees.includes(u.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setTAssignees([...tAssignees, u.id]);
+                                    } else {
+                                      setTAssignees(tAssignees.filter(id => id !== u.id));
+                                    }
+                                  }}
+                                />
+                                <span>{u.name} ({roleLabel(u.role)})</span>
+                              </label>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                      {tAssignees.length > 0 && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
+                          {tAssignees.length} selected
+                        </div>
+                      )}
+                    </div>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>Date *</label>
+                        <input type="date" value={tDate} onChange={e => setTDate(e.target.value)} />
+                      </div>
+                      <div className="form-group">
+                        <label>Time (Optional)</label>
+                        <input type="time" value={tTime} onChange={e => setTTime(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="form-group">
+                      <label>Priority *</label>
+                      <select value={tPriority} onChange={e => setTPriority(e.target.value)}>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                      <button type="submit" className="btn-primary" style={{ flex: 1 }}>{editingTaskId ? 'Update Task' : 'Add Task'}</button>
+                      {editingTaskId && <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>}
+                    </div>
+                  </form>
+                </div>
+              ) : (
+                <div>
+                  {!showExternalForm ? (
+                    <div className="glass-panel task-form-panel" style={{ textAlign: 'center' }}>
+                      <h3>External Tasks</h3>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                        Create tasks for users across all departments
+                      </p>
+                      <button 
+                        onClick={() => setShowExternalForm(true)}
+                        className="btn-primary"
+                        style={{ width: '100%' }}
+                      >
+                        + Create External Task
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="glass-panel task-form-panel">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <h3 style={{ margin: 0 }}>Create External Task</h3>
+                        <button 
+                          type="button"
+                          onClick={() => setShowExternalForm(false)}
+                          className="admin-close-btn"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {formError && <div className="alert-warning">{formError}</div>}
+                      <form onSubmit={handleCreateExternalTask} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                        <div className="form-group">
+                          <label>Task Name *</label>
+                          <input type="text" value={etName} onChange={e => setEtName(e.target.value)} placeholder="Enter task name" />
+                        </div>
+                        <div className="form-group">
+                          <label>Description *</label>
+                          <textarea value={etDesc} onChange={e => setEtDesc(e.target.value)} rows="3" placeholder="Describe the task..." />
+                        </div>
+                        <div className="form-group">
+                          <label>Assignees * (Multi-select)</label>
+                          <div style={{ border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.5rem', maxHeight: '200px', overflowY: 'auto', background: 'rgba(255,255,255,0.95)' }}>
+                            {externalAssigneeOptions.map(group => (
+                              <div key={group.label}>
+                                <div style={{ fontWeight: '600', fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.5rem 0.3rem', textTransform: 'uppercase' }}>
+                                  {group.label}
+                                </div>
+                                {group.users.map(u => (
+                                  <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.5rem', cursor: 'pointer' }}>
+                                    <input 
+                                      type="checkbox" 
+                                      checked={etAssignees.includes(u.id)}
+                                      onChange={(e) => {
+                                        if (e.target.checked) {
+                                          setEtAssignees([...etAssignees, u.id]);
+                                        } else {
+                                          setEtAssignees(etAssignees.filter(id => id !== u.id));
+                                        }
+                                      }}
+                                    />
+                                    <span>{u.name} ({roleLabel(u.role)})</span>
+                                  </label>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                          {etAssignees.length > 0 && (
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
+                              {etAssignees.length} selected
+                            </div>
+                          )}
+                        </div>
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>Date *</label>
+                            <input type="date" value={etDate} onChange={e => setEtDate(e.target.value)} />
+                          </div>
+                          <div className="form-group">
+                            <label>Time (Optional)</label>
+                            <input type="time" value={etTime} onChange={e => setEtTime(e.target.value)} />
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label>Priority *</label>
+                          <select value={etPriority} onChange={e => setEtPriority(e.target.value)}>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                          </select>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+                          <button type="submit" className="btn-primary" style={{ flex: 1 }}>Create External Task</button>
+                        </div>
+                      </form>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1021,7 +1388,10 @@
             if (currentUser.role === 'admin') {
               setTasks(allTasks);
             } else {
-              setTasks(allTasks.filter(t => t.departmentId === currentUser.departmentId));
+              // Non-admin: internal tasks from their dept + external tasks assigned to them or created by them
+              const internalTasks = allTasks.filter(t => !t.isExternal && t.departmentId === currentUser.departmentId);
+              const externalTasks = allTasks.filter(t => t.isExternal && (t.assigneeIds?.includes(currentUser.id) || t.assignedById === currentUser.id));
+              setTasks([...internalTasks, ...externalTasks]);
             }
           },
           err => handleFirestoreError(err, 'todo_tasks')

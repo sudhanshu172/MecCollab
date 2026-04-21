@@ -358,6 +358,7 @@ select { cursor: pointer; }
 .badge-overdue { background: var(--danger-bg); color: var(--danger); }
 .badge-priority { background: var(--border-light); color: var(--text-secondary); }
 .badge-dept { background: #ecfdf5; color: #065f46; }
+.badge-success { background: var(--success-bg); color: var(--success-dark); }
 .task-desc {
   color: var(--text-secondary);
   margin-bottom: 0.75rem;
