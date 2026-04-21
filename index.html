@@ -572,7 +572,7 @@
       // Task form state — External Tasks
       const [etName, setEtName] = useState('');
       const [etDesc, setEtDesc] = useState('');
-      const [etAssignees, setEtAssignees] = useState([]); // Array of assignee IDs
+      const [etAssignee, setEtAssignee] = useState(''); // Single assignee ID
       const [etDate, setEtDate] = useState('');
       const [etTime, setEtTime] = useState('');
       const [etPriority, setEtPriority] = useState('Medium');
@@ -601,12 +601,26 @@
       }, [users, departments, currentUser, isAdmin]);
 
       // All-department assignee options (for external tasks) — only visible to admin/incharge
-      const externalAssigneeOptions = useMemo(() => {
-        return departments.map(dept => ({
-          label: dept.name,
-          users: users.filter(u => u.departmentId === dept.id && u.role !== 'admin').sort((a, b) => a.seniority - b.seniority)
-        })).filter(g => g.users.length > 0);
-      }, [users, departments]);
+      // Single-select SIC options for external tasks
+      const externalSicOptions = useMemo(() => {
+        // 1. Get all users who are Section In-charge
+        const allSics = users.filter(u => u.role === 'incharge');
+        
+        // 2. Separate into "other departments" and "my department"
+        const otherSics = allSics.filter(u => u.departmentId !== currentUser.departmentId);
+        const myDeptSics = allSics.filter(u => u.departmentId === currentUser.departmentId);
+        
+        // 3. Map the data to include the department name for the dropdown
+        const mapSic = (u) => ({
+          id: u.id,
+          name: u.name,
+          deptId: u.departmentId,
+          deptName: departments.find(d => d.id === u.departmentId)?.name || 'Unknown Department'
+        });
+
+  // 4. Combine arrays, placing the user's own department at the bottom
+  return [...otherSics.map(mapSic), ...myDeptSics.map(mapSic)];
+}, [users, departments, currentUser.departmentId]);
 
       // Internal tasks (department-scoped)
       const internalTasks = useMemo(() => {
@@ -649,7 +663,7 @@
       // Filtered & sorted tasks — Internal Tasks
       const processedInternalTasks = useMemo(() => {
         let filtered = [...internalTasks];
-        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted' && t.status !== 'completed');
         else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending' && t.date >= todayStr);
         else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'pending' && t.date < todayStr);
         else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
@@ -674,7 +688,7 @@
       // Filtered & sorted tasks — External Tasks
       const processedExternalTasks = useMemo(() => {
         let filtered = [...externalTasks];
-        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+        if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted' && t.status !== 'completed');
         else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending' && t.date >= todayStr);
         else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'pending' && t.date < todayStr);
         else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
@@ -803,20 +817,23 @@
 
       const handleCreateExternalTask = async (e) => {
         e.preventDefault();
-        if (!etName || !etDesc || etAssignees.length === 0 || !etDate) {
-          setFormError('Please fill all required fields and select at least one assignee.');
+        // Check for the single etAssignee instead of array length
+        if (!etName || !etDesc || !etAssignee || !etDate) {
+          setFormError('Please fill all required fields and select an assignee.');
           return;
         }
         setFormError('');
 
-        const selectedUsers = etAssignees.map(id => users.find(u => u.id === id)).filter(Boolean);
-        if (selectedUsers.length === 0) {
-          setFormError('Invalid assignees selected.');
+        // Find the single selected user
+        const selectedUser = users.find(u => u.id === etAssignee);
+        if (!selectedUser) {
+          setFormError('Invalid assignee selected.');
           return;
         }
 
-        const assigneeIds = selectedUsers.map(u => u.id);
-        const assignees = selectedUsers.map(u => ({ id: u.id, name: u.name, departmentId: u.departmentId }));
+        // Firestore rules still expect arrays, so we wrap the single user in an array
+        const assigneeIds = [selectedUser.id];
+        const assignees = [{ id: selectedUser.id, name: selectedUser.name, departmentId: selectedUser.departmentId }];
 
         await db.collection('todo_tasks').add({
           name: etName,
@@ -839,7 +856,7 @@
 
         setEtName('');
         setEtDesc('');
-        setEtAssignees([]);
+        setEtAssignee('');
         setEtDate('');
         setEtTime('');
         setEtPriority('Medium');
@@ -1177,37 +1194,15 @@
                           <textarea value={etDesc} onChange={e => setEtDesc(e.target.value)} rows="3" placeholder="Describe the task..." />
                         </div>
                         <div className="form-group">
-                          <label>Assignees * (Multi-select)</label>
-                          <div style={{ border: '1.5px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.5rem', maxHeight: '200px', overflowY: 'auto', background: 'rgba(255,255,255,0.95)' }}>
-                            {externalAssigneeOptions.map(group => (
-                              <div key={group.label}>
-                                <div style={{ fontWeight: '600', fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.5rem 0.3rem', textTransform: 'uppercase' }}>
-                                  {group.label}
-                                </div>
-                                {group.users.map(u => (
-                                  <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.5rem', cursor: 'pointer' }}>
-                                    <input 
-                                      type="checkbox" 
-                                      checked={etAssignees.includes(u.id)}
-                                      onChange={(e) => {
-                                        if (e.target.checked) {
-                                          setEtAssignees([...etAssignees, u.id]);
-                                        } else {
-                                          setEtAssignees(etAssignees.filter(id => id !== u.id));
-                                        }
-                                      }}
-                                    />
-                                    <span>{u.name} ({roleLabel(u.role)})</span>
-                                  </label>
-                                ))}
-                              </div>
+                          <label>Assign To (Section In-charge) *</label>
+                          <select value={etAssignee} onChange={e => setEtAssignee(e.target.value)}>
+                            <option value="">Select Section In-charge...</option>
+                            {externalSicOptions.map(sic => (
+                              <option key={sic.id} value={sic.id}>
+                                {sic.name} ({sic.deptName}) {sic.deptId === currentUser.departmentId ? ' - [Your Department]' : ''}
+                              </option>
                             ))}
-                          </div>
-                          {etAssignees.length > 0 && (
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-                              {etAssignees.length} selected
-                            </div>
-                          )}
+                          </select>
                         </div>
                         <div className="form-row">
                           <div className="form-group">
